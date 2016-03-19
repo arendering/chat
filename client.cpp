@@ -6,6 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <stdio.h>
 
 #include <iostream>
 
@@ -35,12 +36,22 @@ int main()
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    getaddrinfo(SERV_ADDR, SERV_PORT, &hints, &servinfo);
+    if(getaddrinfo(SERV_ADDR, SERV_PORT, &hints, &servinfo) != 0) {
+        perror("getaddrinfo() error");
+        return 1;
+    }
     int master_socket = socket(servinfo->ai_family, 
                                servinfo->ai_socktype,
                                servinfo->ai_protocol);
     
-    connect(master_socket, servinfo->ai_addr, servinfo->ai_addrlen);
+    if(master_socket == -1) {
+        perror("socket() error");
+        return 1;
+    }
+    if(connect(master_socket, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
+        perror("connect() error");
+        return 1;
+    }
     freeaddrinfo(servinfo);
     SetNonblock(master_socket);
     SetNonblock(STDIN_FILENO);
@@ -52,7 +63,10 @@ int main()
 
         int max = std::max(master_socket, STDIN_FILENO);
 
-        select(max + 1, &set_on_read, NULL, NULL, NULL);
+        if(select(max + 1, &set_on_read, NULL, NULL, NULL) == -1) {
+            perror("select() error");
+            break;
+        }
 
         if(FD_ISSET(master_socket, &set_on_read)) {
             char buffer[MAX_LEN];
@@ -71,7 +85,10 @@ int main()
             std::getline(std::cin, input);
             input.push_back('\n');
             std::cout << UP << ERASE_LINE;
-            send(master_socket, input.c_str(), input.length(), MSG_NOSIGNAL);
+            if(send(master_socket, input.c_str(),
+                    input.length(), MSG_NOSIGNAL) == -1) {
+                perror("send() error");
+            }
         }
         
     }

@@ -8,10 +8,10 @@
 #include <strings.h>
 #include <string.h>
 #include <arpa/inet.h>
+#include <stdio.h>
 
 #include <iostream>
 #include <algorithm>
-#include <list>
 
 #define PORT "3100"
 #define MAX_EVENTS 32
@@ -38,23 +38,42 @@ int main()
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
 
-    getaddrinfo(NULL, PORT, &hints, &servinfo);
+    if(getaddrinfo(NULL, PORT, &hints, &servinfo) != 0) {
+        perror("getaddrinfo() error");
+        return 1;
+    }
     int master_socket = socket(servinfo->ai_family,
                                servinfo->ai_socktype,
                                servinfo->ai_protocol);
+    if(master_socket == -1) {
+        perror("socket() error");
+        return 1;
+    }
     
-    bind(master_socket, servinfo->ai_addr, servinfo->ai_addrlen);
+    if(bind(master_socket, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
+        perror("bind() error");
+        return 1;
+    }
     freeaddrinfo(servinfo);
     int optval = 1;
-    setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
+    if(setsockopt(master_socket, SOL_SOCKET, 
+                  SO_REUSEADDR, &optval, sizeof optval) == -1) {
+        perror("setsockopt() error");
+    }
     SetNonblock(master_socket);
-    listen(master_socket, SOMAXCONN);
+    if(listen(master_socket, SOMAXCONN) == -1) {
+        perror("listen() error");
+        return 1;
+    }
     
     int epfd = epoll_create1(0);
     struct epoll_event event_master_socket;
     event_master_socket.data.fd = master_socket;
     event_master_socket.events = EPOLLIN;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, master_socket, &event_master_socket);
+    if(epoll_ctl(epfd, EPOLL_CTL_ADD, master_socket, &event_master_socket) == -1) {
+        perror("epoll_ctl() error");
+        return 1;
+    }
 
     while(true) {
         char buffer[MAX_LEN];
@@ -62,16 +81,29 @@ int main()
 
         struct epoll_event events_slave_sockets[MAX_EVENTS];
         int ret_ev = epoll_wait(epfd, events_slave_sockets, MAX_EVENTS, -1);
+        if(ret_ev == -1) {
+            perror("epoll_wait() error");
+            break;
+        }
         for(int i = 0; i < ret_ev; ++i) {
             if(events_slave_sockets[i].data.fd == master_socket) {
                 int slave_socket = accept(master_socket, NULL, NULL);
+                if(slave_socket == -1) {
+                    perror("accept() error");
+                    continue;
+                }
                 SetNonblock(slave_socket);
                 const char *welcome = "Welcome!\n";
                 send(slave_socket, welcome, strlen(welcome) + 1, MSG_NOSIGNAL);
                 struct epoll_event event_slave_socket;
                 event_slave_socket.data.fd = slave_socket;
                 event_slave_socket.events = EPOLLIN | EPOLLOUT;
-                epoll_ctl(epfd, EPOLL_CTL_ADD, slave_socket, &event_slave_socket);
+                if(epoll_ctl(epfd, EPOLL_CTL_ADD,
+                             slave_socket, &event_slave_socket) == -1) {
+                    perror("epoll_ctl() error");
+                    close(slave_socket);
+                    continue;
+                }
                 std::cout << "accepted connection.." << std::endl;
             } else {
                 if(events_slave_sockets[i].events & EPOLLIN) {
@@ -87,10 +119,14 @@ int main()
                     } else {
                         for(int i = 0; i < ret_ev; ++i) {
                             if(events_slave_sockets[i].events & EPOLLOUT) {
-                            send(events_slave_sockets[i].data.fd,
-                                 buffer,
-                                 MAX_LEN,
-                                 MSG_NOSIGNAL);
+                                std::string tmp(buffer);
+                                tmp.push_back('\n');
+                                if(send(events_slave_sockets[i].data.fd,
+                                   tmp.c_str(),
+                                   tmp.length() + 1,
+                                   MSG_NOSIGNAL) == -1) {
+                                    perror("send() error");
+                                }
                             }
                         }
                     }
